@@ -1,0 +1,66 @@
+pipeline {
+    agent {
+            docker {
+                label 'Jenkins-Agent-al2-x64-c54xlarge-Docker-Host'
+                image 'opensearchstaging/ci-runner:al2-x64-arm64-jdk14-node10.24.1-cypress6.9.1-20211005'
+                // Unlike freestyle docker, pipeline docker does not login to the container and run commands
+                // It use executes which does not source the docker container internal ENV VAR
+                args '-e JAVA_HOME=/usr/lib/jvm/adoptopenjdk-14-hotspot'
+                alwaysPull true
+            }
+    }
+    environment {
+        ARTIFACT_PATH = "/usr/share/opensearch/.m2/repository/org/opensearch/client/opensearch-java/${VERSION}"
+        SNAPSHOT_PATH = "/usr/share/opensearch/.m2/repository/org/opensearch"
+        VERSION = "${params.VERSION}"
+    }
+    stages {
+        stage('parameters') {
+            steps {
+                script {
+                    properties([
+                            parameters([
+                                    string(
+                                            defaultValue: '',
+                                            name: 'REF',
+                                            trim: true
+                                    ),
+                                    string(
+                                            name: 'VERSION',
+                                            trim: true
+                                    )
+                            ])
+                    ])
+                    if (params.REF.isEmpty() || params.VERSION.isEmpty()) {
+                        currentBuild.result = 'ABORTED'
+                        error('One or both of the parameters is empty')
+                    }
+                }
+            }
+        }
+        stage('Publish to Maven Local') {
+            steps {
+                // checkout the commit
+                git url: 'https://github.com/opensearch-project/opensearch-java.git', branch: 'main'
+                sh('git checkout ${REF}')
+
+                //publish to maven local
+                sh('./gradlew publishtoMavenLocal')
+            }
+        }
+        stage('publish artifacts') {
+            steps {
+                // checkout the build repo
+                git url: 'https://github.com/opensearch-project/opensearch-build.git', branch: 'main'
+                withCredentials([usernamePassword(credentialsId: 'Sonatype', usernameVariable: 'SONATYPE_USERNAME', passwordVariable: 'SONATYPE_PASSWORD')]) {
+                    sh('$WORKSPACE/publish/publish-snapshot.sh $SNAPSHOT_PATH')
+                }
+            }
+            post() {
+                        always {
+                            cleanWs disableDeferredWipeout: true, deleteDirs: true
+                        }
+            }
+        }
+    }
+}
